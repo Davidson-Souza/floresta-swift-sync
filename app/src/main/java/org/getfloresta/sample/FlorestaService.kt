@@ -10,16 +10,25 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Build
 import android.os.IBinder
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.getfloresta.AssumeValidArg
 import org.getfloresta.Config
 import org.getfloresta.FlorestaFfiException
 import org.getfloresta.Florestad
 import org.getfloresta.Network
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class FlorestaService : Service() {
     private val executor = Executors.newSingleThreadExecutor()
+    private val downloadClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.MINUTES)
+        .callTimeout(15, TimeUnit.MINUTES)
+        .build()
     private lateinit var statusStore: SharedPreferences
 
     @Volatile
@@ -74,6 +83,7 @@ class FlorestaService : Service() {
             var startedNode: Florestad? = null
             try {
                 val dataDir = File(filesDir, "floresta").apply { mkdirs() }
+                ensureBitcoinHints(dataDir)
                 val config = Config(
                     datadir = dataDir.absolutePath,
                     network = Network.BITCOIN,
@@ -90,7 +100,7 @@ class FlorestaService : Service() {
                 startedNode.start()
                 node = startedNode
                 startedNode = null
-                notifyStatus("Floresta running on $JSON_RPC_ADDRESS")
+                notifyStatus("$STATUS_RUNNING_PREFIX$JSON_RPC_ADDRESS")
             } catch (error: FlorestaFfiException.StartException) {
                 startedNode?.close()
                 notifyStatus("Floresta failed: ${error.details}")
@@ -100,6 +110,41 @@ class FlorestaService : Service() {
             } finally {
                 starting = false
             }
+        }
+    }
+
+    private fun ensureBitcoinHints(dataDir: File) {
+        val hintsFile = File(dataDir, BITCOIN_HINTS_FILE)
+        if (hintsFile.isFile && hintsFile.length() > 0L) return
+
+        notifyStatus("Downloading $BITCOIN_HINTS_FILE before starting Floresta")
+        val tempFile = File(dataDir, "$BITCOIN_HINTS_FILE.tmp").apply { delete() }
+        val request = Request.Builder().url(BITCOIN_HINTS_URL).build()
+
+        downloadClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("Failed to download $BITCOIN_HINTS_FILE: HTTP ${response.code}")
+            }
+
+            val body = response.body ?: throw IOException("Failed to download $BITCOIN_HINTS_FILE: empty body")
+            tempFile.outputStream().use { output ->
+                body.byteStream().use { input -> input.copyTo(output) }
+            }
+        }
+
+        if (tempFile.length() == 0L) {
+            tempFile.delete()
+            throw IOException("Downloaded $BITCOIN_HINTS_FILE is empty")
+        }
+
+        if (hintsFile.exists() && !hintsFile.delete()) {
+            tempFile.delete()
+            throw IOException("Failed to replace invalid $BITCOIN_HINTS_FILE in ${dataDir.absolutePath}")
+        }
+
+        if (!tempFile.renameTo(hintsFile)) {
+            tempFile.delete()
+            throw IOException("Failed to place $BITCOIN_HINTS_FILE in ${dataDir.absolutePath}")
         }
     }
 
@@ -159,6 +204,9 @@ class FlorestaService : Service() {
         const val JSON_RPC_ADDRESS = "127.0.0.1:8332"
         const val STATUS_PREFS = "floresta-service-status"
         const val KEY_STATUS = "status"
+        const val STATUS_RUNNING_PREFIX = "Floresta running on "
+        private const val BITCOIN_HINTS_URL = "https://utxohints.store/hints/bitcoin"
+        private const val BITCOIN_HINTS_FILE = "bitcoin.hints"
         private const val ELECTRUM_ADDRESS = "127.0.0.1:50001"
         private const val ACTION_STOP = "org.getfloresta.sample.STOP"
         private const val CHANNEL_ID = "floresta-node"
