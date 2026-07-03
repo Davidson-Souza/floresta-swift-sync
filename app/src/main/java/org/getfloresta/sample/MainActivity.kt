@@ -486,7 +486,11 @@ class MainActivity : Activity() {
         ibdProgress.isIndeterminate = false
         ibdProgress.progress = (validationProgress * ibdProgress.max).roundToInt()
         ibdProgressLabel.text = String.format(Locale.US, "%.2f%%", validationProgress * 100.0)
-        ibdStatus.text = if (initialBlockDownload) "Syncing blocks" else "Complete"
+        ibdStatus.text = when {
+            initialBlockDownload && height <= 0L -> "Waiting for first validated block"
+            initialBlockDownload -> "Syncing blocks"
+            else -> "Complete"
+        }
         ibdRuntime.text = metricText("Running", ibdMetrics.elapsedMillis?.let(::formatDuration) ?: "not recorded")
         ibdEta.text = metricText("ETA", ibdMetrics.etaMillis?.let(::formatDuration) ?: "unavailable")
         ibdSpeed.text = metricText("Blocks/s", ibdMetrics.blocksPerSecond?.let { String.format(Locale.US, "%.2f", it) } ?: "unavailable")
@@ -538,15 +542,15 @@ class MainActivity : Activity() {
         var endTime = ibdStore.getLong(KEY_IBD_END_TIME, 0L)
         val editor = ibdStore.edit()
 
-        if (inIbd) {
+        if (inIbd && safeHeight != null && safeHeight > 0L) {
             if (startTime <= 0L || endTime > 0L) {
                 startTime = now
-                startHeight = safeHeight ?: -1L
+                startHeight = safeHeight
                 endTime = 0L
                 editor.putLong(KEY_IBD_START_TIME, startTime)
                     .putLong(KEY_IBD_START_HEIGHT, startHeight)
                     .remove(KEY_IBD_END_TIME)
-            } else if (startHeight < 0L && safeHeight != null) {
+            } else if (startHeight < 0L) {
                 startHeight = safeHeight
                 editor.putLong(KEY_IBD_START_HEIGHT, startHeight)
             }
