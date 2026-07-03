@@ -19,6 +19,7 @@ import org.getfloresta.Florestad
 import org.getfloresta.Network
 import java.io.File
 import java.io.IOException
+import kotlin.math.roundToInt
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -115,9 +116,13 @@ class FlorestaService : Service() {
 
     private fun ensureBitcoinHints(dataDir: File) {
         val hintsFile = File(dataDir, BITCOIN_HINTS_FILE)
-        if (hintsFile.isFile && hintsFile.length() > 0L) return
+        if (hintsFile.isFile && hintsFile.length() > 0L) {
+            updateHintsProgress(hintsFile.length(), hintsFile.length(), true)
+            return
+        }
 
         notifyStatus("Downloading $BITCOIN_HINTS_FILE before starting Floresta")
+        updateHintsProgress(0L, -1L, false)
         val tempFile = File(dataDir, "$BITCOIN_HINTS_FILE.tmp").apply { delete() }
         val request = Request.Builder().url(BITCOIN_HINTS_URL).build()
 
@@ -128,7 +133,29 @@ class FlorestaService : Service() {
 
             val body = response.body ?: throw IOException("Failed to download $BITCOIN_HINTS_FILE: empty body")
             tempFile.outputStream().use { output ->
-                body.byteStream().use { input -> input.copyTo(output) }
+                body.byteStream().use { input ->
+                    val totalBytes = body.contentLength()
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    var downloadedBytes = 0L
+                    var lastUpdateBytes = 0L
+
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read == -1) break
+
+                        output.write(buffer, 0, read)
+                        downloadedBytes += read
+
+                        if (downloadedBytes - lastUpdateBytes >= HINTS_PROGRESS_UPDATE_BYTES) {
+                            updateHintsProgress(downloadedBytes, totalBytes, false)
+                            updateStatus(downloadStatus(downloadedBytes, totalBytes))
+                            lastUpdateBytes = downloadedBytes
+                        }
+                    }
+
+                    updateHintsProgress(downloadedBytes, totalBytes, false)
+                    updateStatus(downloadStatus(downloadedBytes, totalBytes))
+                }
             }
         }
 
@@ -146,6 +173,25 @@ class FlorestaService : Service() {
             tempFile.delete()
             throw IOException("Failed to place $BITCOIN_HINTS_FILE in ${dataDir.absolutePath}")
         }
+
+        updateHintsProgress(hintsFile.length(), hintsFile.length(), true)
+    }
+
+    private fun updateHintsProgress(downloadedBytes: Long, totalBytes: Long, complete: Boolean) {
+        statusStore.edit()
+            .putLong(KEY_HINTS_DOWNLOADED_BYTES, downloadedBytes)
+            .putLong(KEY_HINTS_TOTAL_BYTES, totalBytes)
+            .putBoolean(KEY_HINTS_COMPLETE, complete)
+            .apply()
+    }
+
+    private fun downloadStatus(downloadedBytes: Long, totalBytes: Long): String {
+        val progress = if (totalBytes > 0L) {
+            " ${(downloadedBytes * 100.0 / totalBytes).roundToInt()}%"
+        } else {
+            ""
+        }
+        return "Downloading $BITCOIN_HINTS_FILE$progress"
     }
 
     private fun notifyStatus(text: String) {
@@ -204,9 +250,13 @@ class FlorestaService : Service() {
         const val JSON_RPC_ADDRESS = "127.0.0.1:8332"
         const val STATUS_PREFS = "floresta-service-status"
         const val KEY_STATUS = "status"
+        const val KEY_HINTS_DOWNLOADED_BYTES = "hints-downloaded-bytes"
+        const val KEY_HINTS_TOTAL_BYTES = "hints-total-bytes"
+        const val KEY_HINTS_COMPLETE = "hints-complete"
         const val STATUS_RUNNING_PREFIX = "Floresta running on "
         private const val BITCOIN_HINTS_URL = "https://utxohints.store/hints/bitcoin"
         private const val BITCOIN_HINTS_FILE = "bitcoin.hints"
+        private const val HINTS_PROGRESS_UPDATE_BYTES = 512L * 1024L
         private const val ELECTRUM_ADDRESS = "127.0.0.1:50001"
         private const val ACTION_STOP = "org.getfloresta.sample.STOP"
         private const val CHANNEL_ID = "floresta-node"
