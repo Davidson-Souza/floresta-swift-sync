@@ -48,14 +48,14 @@ class FlorestaService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        updateStatus("Starting Floresta")
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         startForeground(NOTIFICATION_ID, buildNotification(currentStatus()))
         acquireWakeLock()
-
-        when (intent?.action) {
-            ACTION_STOP -> stopSelf()
-            else -> startNode()
-        }
+        startNode()
 
         return START_STICKY
     }
@@ -84,6 +84,7 @@ class FlorestaService : Service() {
     private fun startNode() {
         if (node != null || starting) return
         starting = true
+        updateStatus("Starting Floresta")
 
         executor.execute {
             var startedNode: Florestad? = null
