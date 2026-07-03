@@ -17,10 +17,13 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
+import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -80,9 +83,17 @@ class MainActivity : Activity() {
             window.navigationBarColor = Color.WHITE
         }
 
+        if (!hasSelectedNetwork()) {
+            setContentView(buildNetworkPicker())
+            return
+        }
+
+        startDashboard()
+    }
+
+    private fun startDashboard() {
         setContentView(buildContent())
         renderStartup(currentServiceStatus())
-
         requestNotificationPermission()
         requestBatteryOptimizationExemption()
         FlorestaService.start(this)
@@ -93,6 +104,46 @@ class MainActivity : Activity() {
         handler.removeCallbacks(pollRpc)
         executor.shutdownNow()
         super.onDestroy()
+    }
+
+    private fun buildNetworkPicker(): View {
+        val networks = listOf("Bitcoin", "Signet")
+        val spinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                networks,
+            ).apply {
+                setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
+        }
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(28), dp(28), dp(28), dp(28))
+            setBackgroundColor(COLOR_BACKGROUND)
+
+            addView(spinner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addSpacer(14)
+            addView(
+                Button(this@MainActivity).apply {
+                    text = "Start"
+                    setTextColor(Color.WHITE)
+                    backgroundTintList = android.content.res.ColorStateList.valueOf(COLOR_GREEN)
+                    setOnClickListener {
+                        val network = if (spinner.selectedItemPosition == 1) {
+                            FlorestaService.NETWORK_SIGNET
+                        } else {
+                            FlorestaService.NETWORK_BITCOIN
+                        }
+                        saveSelectedNetwork(network)
+                        startDashboard()
+                    }
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+            )
+        }
     }
 
     private fun buildContent(): View {
@@ -140,7 +191,7 @@ class MainActivity : Activity() {
                             orientation = LinearLayout.VERTICAL
                             setPadding(dp(14), 0, 0, 0)
                             addView(label("Floresta Swift Sync", 24f, COLOR_TEXT, Typeface.BOLD))
-                            addView(label("Bitcoin sync with UTXO hints", 14f, COLOR_MUTED, Typeface.NORMAL))
+                            addView(label("${selectedNetworkDisplay()} sync with UTXO hints", 14f, COLOR_MUTED, Typeface.NORMAL))
                         },
                         LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
                     )
@@ -457,6 +508,26 @@ class MainActivity : Activity() {
     private fun currentServiceStatus(): String {
         return serviceStore.getString(FlorestaService.KEY_STATUS, "Service has not reported status yet")
             ?: "Service has not reported status yet"
+    }
+
+    private fun hasSelectedNetwork(): Boolean = serviceStore.contains(FlorestaService.KEY_SELECTED_NETWORK)
+
+    private fun saveSelectedNetwork(network: String) {
+        serviceStore.edit()
+            .putString(FlorestaService.KEY_SELECTED_NETWORK, network)
+            .putString(FlorestaService.KEY_STATUS, "Starting Floresta")
+            .remove(FlorestaService.KEY_HINTS_DOWNLOADED_BYTES)
+            .remove(FlorestaService.KEY_HINTS_TOTAL_BYTES)
+            .remove(FlorestaService.KEY_HINTS_COMPLETE)
+            .apply()
+        ibdStore.edit().clear().apply()
+    }
+
+    private fun selectedNetworkDisplay(): String {
+        return when (serviceStore.getString(FlorestaService.KEY_SELECTED_NETWORK, FlorestaService.NETWORK_BITCOIN)) {
+            FlorestaService.NETWORK_SIGNET -> "Signet"
+            else -> "Bitcoin"
+        }
     }
 
     private fun updateIbdMetrics(inIbd: Boolean, height: Long, headers: Long): IbdMetrics {
