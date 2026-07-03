@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.getfloresta.AssumeValidArg
@@ -38,6 +39,8 @@ class FlorestaService : Service() {
     @Volatile
     private var starting = false
 
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onCreate() {
         super.onCreate()
         statusStore = getSharedPreferences(STATUS_PREFS, MODE_PRIVATE)
@@ -47,6 +50,7 @@ class FlorestaService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         updateStatus("Starting Floresta")
         startForeground(NOTIFICATION_ID, buildNotification(currentStatus()))
+        acquireWakeLock()
 
         when (intent?.action) {
             ACTION_STOP -> stopSelf()
@@ -68,6 +72,7 @@ class FlorestaService : Service() {
                 current?.stop()
             } finally {
                 current?.close()
+                releaseWakeLock()
                 updateStatus("Floresta stopped")
                 executor.shutdown()
             }
@@ -115,22 +120,49 @@ class FlorestaService : Service() {
         }
     }
 
+    private fun acquireWakeLock() {
+        val current = wakeLock
+        if (current?.isHeld == true) return
+
+        val powerManager = getSystemService(PowerManager::class.java)
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:FlorestaSync").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.takeIf { it.isHeld }?.release()
+        wakeLock = null
+    }
+
     private fun selectedNetwork(): SelectedNetwork {
         val selected = statusStore.getString(KEY_SELECTED_NETWORK, NETWORK_BITCOIN) ?: NETWORK_BITCOIN
+        val hintsBaseUrl = hintsBaseUrl()
         return when (selected) {
             NETWORK_SIGNET -> SelectedNetwork(
                 displayName = "Signet",
                 network = Network.SIGNET,
-                hintsUrl = "$HINTS_BASE_URL/signet",
+                hintsUrl = "$hintsBaseUrl/signet",
                 hintsFile = "signet.hints",
             )
             else -> SelectedNetwork(
                 displayName = "Bitcoin",
                 network = Network.BITCOIN,
-                hintsUrl = "$HINTS_BASE_URL/bitcoin",
+                hintsUrl = "$hintsBaseUrl/bitcoin",
                 hintsFile = "bitcoin.hints",
             )
         }
+    }
+
+    private fun hintsBaseUrl(): String {
+        val saved = statusStore.getString(KEY_HINTS_BASE_URL, DEFAULT_HINTS_BASE_URL).orEmpty().trim()
+        val withScheme = if (saved.startsWith("http://") || saved.startsWith("https://")) {
+            saved
+        } else {
+            "https://$saved"
+        }
+        return withScheme.trimEnd('/').ifBlank { DEFAULT_HINTS_BASE_URL }
     }
 
     private fun ensureHints(selectedNetwork: SelectedNetwork, dataDir: File) {
@@ -277,14 +309,15 @@ class FlorestaService : Service() {
         const val STATUS_PREFS = "floresta-service-status"
         const val KEY_STATUS = "status"
         const val KEY_SELECTED_NETWORK = "selected-network"
+        const val KEY_HINTS_BASE_URL = "hints-base-url"
         const val KEY_HINTS_DOWNLOADED_BYTES = "hints-downloaded-bytes"
         const val KEY_HINTS_TOTAL_BYTES = "hints-total-bytes"
         const val KEY_HINTS_COMPLETE = "hints-complete"
         const val STATUS_RUNNING_PREFIX = "Floresta running on "
         const val NETWORK_BITCOIN = "bitcoin"
         const val NETWORK_SIGNET = "signet"
+        const val DEFAULT_HINTS_BASE_URL = "https://utxohints.store/hints"
         private const val DATA_DIR_NAME = ".floresta"
-        private const val HINTS_BASE_URL = "https://utxohints.store/hints"
         private const val HINTS_PROGRESS_UPDATE_BYTES = 512L * 1024L
         private const val ELECTRUM_ADDRESS = "127.0.0.1:50001"
         private const val ACTION_STOP = "org.getfloresta.sample.STOP"

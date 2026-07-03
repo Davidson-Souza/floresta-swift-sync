@@ -17,13 +17,16 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.Spinner
+import android.widget.Switch
 import android.widget.TextView
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -52,6 +55,7 @@ class MainActivity : Activity() {
 
     private lateinit var statusPill: TextView
     private lateinit var serviceStatus: TextView
+    private lateinit var hintsCardContainer: View
     private lateinit var hintsStatus: TextView
     private lateinit var hintsSize: TextView
     private lateinit var hintsProgress: ProgressBar
@@ -78,6 +82,7 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             window.statusBarColor = COLOR_BACKGROUND
             window.navigationBarColor = Color.WHITE
@@ -101,6 +106,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         handler.removeCallbacks(pollRpc)
         executor.shutdownNow()
         super.onDestroy()
@@ -117,6 +123,20 @@ class MainActivity : Activity() {
                 setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
             }
         }
+        val hintsServer = EditText(this).apply {
+            setSingleLine(true)
+            setText(FlorestaService.DEFAULT_HINTS_BASE_URL)
+            hint = FlorestaService.DEFAULT_HINTS_BASE_URL
+        }
+        val advancedOptions = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            addView(label("Hints server", 13f, COLOR_MUTED, Typeface.BOLD))
+            addSpacer(6)
+            addView(hintsServer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addSpacer(4)
+            addView(label("The app will append /bitcoin or /signet.", 12f, COLOR_MUTED, Typeface.NORMAL))
+        }
 
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -125,6 +145,19 @@ class MainActivity : Activity() {
             setBackgroundColor(COLOR_BACKGROUND)
 
             addView(spinner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addSpacer(14)
+            addView(
+                Switch(this@MainActivity).apply {
+                    text = "Advanced"
+                    setTextColor(COLOR_TEXT)
+                    setOnCheckedChangeListener { _, checked ->
+                        advancedOptions.visibility = if (checked) View.VISIBLE else View.GONE
+                    }
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+            )
+            addSpacer(8)
+            addView(advancedOptions, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addSpacer(14)
             addView(
                 Button(this@MainActivity).apply {
@@ -137,7 +170,7 @@ class MainActivity : Activity() {
                         } else {
                             FlorestaService.NETWORK_BITCOIN
                         }
-                        saveSelectedNetwork(network)
+                        saveSelectedNetwork(network, hintsServer.text?.toString().orEmpty())
                         startDashboard()
                     }
                 },
@@ -213,6 +246,7 @@ class MainActivity : Activity() {
 
     private fun hintsCard(): View {
         return card().apply {
+            hintsCardContainer = this
             orientation = LinearLayout.VERTICAL
             addView(sectionTitle("Hints file"))
             addSpacer(12)
@@ -435,17 +469,19 @@ class MainActivity : Activity() {
 
         hintsProgress.isIndeterminate = total <= 0L && downloaded == 0L && !complete
         if (complete) {
-            hintsProgress.visibility = View.GONE
+            hintsCardContainer.visibility = View.GONE
             hintsProgress.progress = hintsProgress.max
             hintsStatus.text = "Ready"
             hintsProgressLabel.text = "100%"
         } else if (total > 0L) {
+            hintsCardContainer.visibility = View.VISIBLE
             hintsProgress.visibility = View.VISIBLE
             val progress = (downloaded.toDouble() / total).coerceIn(0.0, 1.0)
             hintsProgress.progress = (progress * hintsProgress.max).roundToInt()
             hintsStatus.text = "Downloading"
             hintsProgressLabel.text = "${(progress * 100.0).roundToInt()}%"
         } else {
+            hintsCardContainer.visibility = View.VISIBLE
             hintsProgress.visibility = View.VISIBLE
             hintsProgress.progress = 0
             hintsStatus.text = "Waiting"
@@ -516,15 +552,26 @@ class MainActivity : Activity() {
 
     private fun hasSelectedNetwork(): Boolean = serviceStore.contains(FlorestaService.KEY_SELECTED_NETWORK)
 
-    private fun saveSelectedNetwork(network: String) {
+    private fun saveSelectedNetwork(network: String, hintsBaseUrl: String) {
         serviceStore.edit()
             .putString(FlorestaService.KEY_SELECTED_NETWORK, network)
+            .putString(FlorestaService.KEY_HINTS_BASE_URL, normalizeHintsBaseUrl(hintsBaseUrl))
             .putString(FlorestaService.KEY_STATUS, "Starting Floresta")
             .remove(FlorestaService.KEY_HINTS_DOWNLOADED_BYTES)
             .remove(FlorestaService.KEY_HINTS_TOTAL_BYTES)
             .remove(FlorestaService.KEY_HINTS_COMPLETE)
             .apply()
         ibdStore.edit().clear().apply()
+    }
+
+    private fun normalizeHintsBaseUrl(value: String): String {
+        val trimmed = value.trim().ifBlank { FlorestaService.DEFAULT_HINTS_BASE_URL }
+        val withScheme = if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+            trimmed
+        } else {
+            "https://$trimmed"
+        }
+        return withScheme.trimEnd('/')
     }
 
     private fun selectedNetworkDisplay(): String {
